@@ -1,4 +1,4 @@
-# Streamlit app: Inpatient CDI Analyzer
+# Streamlit app: Procedure-Focused CDI Analyzer
 import streamlit as st
 import fitz  # PyMuPDF
 import docx
@@ -12,8 +12,6 @@ import time
 from io import BytesIO
 
 # --- Load Gemini API Key ---
-# This assumes the API key is set in Streamlit secrets.toml
-# For local testing, you might hardcode it or use an environment variable.
 if 'gemini' in st.secrets:
     genai.configure(api_key=st.secrets['gemini']['api_key'])
 else:
@@ -35,31 +33,36 @@ def extract_text_from_docx(file):
     d = docx.Document(file)
     return "\n".join(p.text for p in d.paragraphs if p.text.strip())
 
-def split_sections(text):
+def split_procedure_sections(text):
     """
-    Splits the full clinical document text into logical sections based on common headers.
-    Headers are case-insensitive.
+    Splits procedure documentation into logical sections based on common procedure headers.
     """
-    # Common clinical document headers to identify sections
-    headers = [
-        "history of present illness", "progress note", "operative report",
-        "discharge summary", "consultation", "physical exam",
-        "assessment and plan", "emergency department record",
-        "diagnostic test results", "physician orders",
-        "anaesthesiology record", "medication administration record",
-        "vital signs flowsheet", "problem list", "ventilator flowsheet",
-        "wound care notes"
+    procedure_headers = [
+        "operative report", "procedure report", "surgery report",
+        "preoperative diagnosis", "postoperative diagnosis", "final diagnosis",
+        "procedure performed", "operation performed", "surgical procedure",
+        "indications", "indications for procedure", "indication for surgery",
+        "operative technique", "procedure technique", "surgical technique",
+        "operative findings", "intraoperative findings", "surgical findings",
+        "complications", "intraoperative complications", "postoperative complications",
+        "specimens", "pathology", "tissue removed", "specimens sent",
+        "anesthesia", "anesthesia record", "anesthesia type",
+        "preoperative note", "postoperative note", "recovery note",
+        "wound details", "closure", "dressing", "hemostasis",
+        "estimated blood loss", "fluids", "positioning",
+        "consent", "informed consent"
     ]
+    
     lines = text.lower().splitlines()
     sections = {}
-    current_section = "unknown_introduction" # Default section for text before any recognized header
+    current_section = "procedure_overview"  # Default section
     buffer = []
 
     for line in lines:
         found_header = False
-        for h in headers:
-            # Check if the line contains a header, allowing for some flexibility (e.g., "History of Present Illness:")
-            if h in line and len(line) < 100: # Heuristic: header lines are usually short
+        for h in procedure_headers:
+            # More flexible header matching for procedures
+            if h in line and len(line) < 150:  # Allow slightly longer lines for procedure headers
                 if buffer:
                     sections[current_section.strip()] = "\n".join(buffer).strip()
                     buffer = []
@@ -69,298 +72,459 @@ def split_sections(text):
         if not found_header:
             buffer.append(line)
 
-    # Add any remaining text to the last section or 'unknown_introduction'
+    # Add any remaining text
     if buffer:
         sections[current_section.strip()] = "\n".join(buffer).strip()
+    
     return sections
 
-
-def categorize_section_type(text):
+def categorize_procedure_type(text):
     """
-    Uses Gemini to categorize the type of clinical documentation section.
-    Provides a document type and a confidence score.
+    Uses Gemini to categorize the specific type of procedure documentation.
     """
-    snippet = text[:1500] # Use a larger snippet for better context
+    snippet = text[:2000]  # Larger snippet for procedures
     prompt = f"""
-    You are an expert in clinical documentation. Analyze the following text snippet from a patient's chart.
-    What type of clinical documentation is this?
-    Choose one from the most common types: History and Physical (H&P), Progress Note, Operative Report, Discharge Summary, Consultation Report, Emergency Department Record, Diagnostic Test Results, Physician Orders, Anesthesiology Record, Medication Administration Record, Vital Signs Flowsheet, Problem List, Ventilator Flowsheet, Wound Care Notes, or Other/Unknown.
-    Provide a confidence percentage for your categorization.
+    You are an expert in surgical and procedure documentation. Analyze this text to determine the specific type of procedure document.
+    
+    Choose the most specific category from:
+    - Operative Report (major surgery)
+    - Procedure Report (minor procedure)
+    - Endoscopic Report
+    - Interventional Radiology Report
+    - Cardiac Catheterization Report
+    - Anesthesia Record
+    - Pre-operative Assessment
+    - Post-operative Note
+    - Wound Care Procedure Note
+    - Debridement Procedure (Excisional/Non-excisional)
+    - Biopsy Report
+    - Other/Unknown
+    
+    Also identify the main procedure type (e.g., "Excisional Debridement", "Appendectomy", "Endoscopy").
+    Provide confidence percentage.
 
     --- Text Snippet ---
     {snippet}
     --- End Snippet ---
-    Respond in JSON format like this: {{"Document Type": "str", "Confidence": int}}
+    
+    Respond in JSON format: {{"Document Type": "str", "Procedure Type": "str", "Confidence": int}}
     """
     try:
         response = model.generate_content(prompt)
-        # Attempt to parse JSON, handle cases where Gemini might return extra text
         json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
         return json.loads(json_str)
     except Exception as e:
-        st.warning(f"Error categorizing section type: {e}. Gemini response: {response.text}")
-        return {"Document Type": "Unknown", "Confidence": 0}
+        st.warning(f"Error categorizing procedure type: {e}")
+        return {"Document Type": "Unknown", "Procedure Type": "Unknown", "Confidence": 0}
 
-
-def generate_gemini_analysis(text, retries=3):
+def generate_procedure_cdi_analysis(text, retries=3):
     """
-    Uses Gemini to perform a detailed CDI analysis on the provided clinical text.
-    Evaluates against 5 CDI criteria, provides scores, explanations, proposed actions,
-    and draft queries.
+    Specialized CDI analysis for procedure documentation focusing on the 7 critical criteria
+    with procedure-specific emphasis.
     """
-    # Detailed definitions of CDI criteria, derived from the uploaded RTF documents,
-    # embedded directly into the prompt to guide Gemini's reasoning.
-    cdi_criteria_definitions = """
-    Here are the definitions for the 5 CDI-relevant criteria you must assess, drawing from the principles of high-quality clinical documentation:
+    
+    procedure_cdi_criteria = """
+    You are a Senior CDI Specialist specializing in PROCEDURE DOCUMENTATION. Evaluate this procedure document against these 5 critical criteria:
 
-    1.  **Clinical Reliability (Score 0-10):**
-        * **Definition:** The content of the record is trustworthy, safe, and internally consistent, supporting the treatments provided. Documentation should logically align with the patient's condition and the interventions performed.
-        * **Example of Deficiency:** Treatment provided without documentation of the condition being treated (e.g., Lasix given, but no CHF documented; KCI administered, no hypokalemia documented). Or, a diagnosis that does not appear reliable based on the treatment (e.g., blood transfusion for a bleeding gastric ulcer without acute blood loss anemia).
-        * **Goal:** Ensure diagnoses and treatments are mutually supportive and clinically sound.
+    1. **Clinical Reliability (Score 0-10):**
+       - Do the procedures performed match the documented indications?
+       - Is the preoperative diagnosis supported by the procedure findings?
+       - Are treatments/interventions consistent with documented conditions?
+       - Example Issue: Excisional debridement performed but no clear indication documented
+       
+    2. **Clinical Precision (Score 0-10):**
+       - Are anatomical locations specific? (e.g., "left lower leg" vs "leg")
+       - Is procedure type clearly specified? (e.g., "excisional" vs "non-excisional" debridement)
+       - Are measurements exact and complete?
+       - Are instruments and techniques precisely documented?
+       
+    3. **Documentation Completeness (Score 0-10):**
+       - All required elements present: indications, technique, findings, specimens, complications?
+       - Are abnormal findings addressed with clinical significance?
+       - Missing elements that should be documented?
+       
+    4. **Clinical Consistency (Score 0-10):**
+       - Do preoperative and postoperative diagnoses align logically?
+       - Are procedure findings consistent with documented technique?
+       - Any contradictions between different sections of the report?
+       
+    5. **Clarity (Score 0-10):**
+       - Is the procedure description unambiguous?
+       - Are findings clearly explained?
+       - Would another surgeon understand exactly what was done?
+       - Any vague terms that need clarification?
 
-    2.  **Clinical Precision (Score 0-10):**
-        * **Definition:** The record is accurate, exact, and strictly defined. Documentation should include specific details, etiology, and highest level of specificity where clinically appropriate. Avoid vague or general terms.
-        * **Example of Deficiency:** No specific diagnosis documented when a more specific diagnosis appears to be supported (e.g., "anemia" vs. "acute or chronic blood loss anemia"; "pneumonia" vs. "aspiration pneumonia").
-        * **Goal:** Drive documentation to the highest level of detail and specificity for accurate coding and reflection of patient acuity.
-
-    3.  **Documentation Completeness (Score 0-10):**
-        * **Definition:** The record has the maximum content and is thorough. All concerns are fully addressed, including appropriate authentication (signature, date). Abnormal test results should have documented clinical significance or be noted as clinically insignificant. Reasons for tests/treatments should be documented.
-        * **Example of Deficiency:** Abnormal test results without documentation for clinical significance (e.g., low sodium, magnesium, potassium without corresponding diagnoses or notation of clinical insignificance). Lack of documented reason for ordered tests or treatments.
-        * **Goal:** Ensure all relevant clinical information is present, authenticated, and fully explained.
-
-    4.  **Clinical Consistency & Clarity (Score 0-10):**
-        * **Definition:** The record is not contradictory, vague, or ambiguous. Documentation should be coherent across different entries and authors. If conflicting information exists, it should be resolved or clarified. Symptoms should ideally have identified etiologies; if not, "etiology undetermined" should be documented.
-        * **Example of Deficiency:** Disagreement between two or more treating physicians without obvious resolution (e.g., primary care documents TIA, neurologist documents CVA, and attending physician doesn't clarify). Vague or ambiguous documentation, especially for symptom principal diagnoses (e.g., "chest pain" without further insight; "syncope" without etiology).
-        * **Goal:** Achieve a unified, unambiguous clinical picture that accurately reflects the patient's condition and care.
-
-    5.  **Timeliness (Flag Only - "Present", "Absent", or "N/A"):**
-        * **Definition:** Documentation is prepared by the provider at the point it is needed for patient care, adhering to facility guidelines. This includes timely progress notes, discharge summaries, and documentation of Present on Admission (POA) indicators.
-        * **Flagging:** You will only flag if there are *clear indicators* of timeliness issues (e.g., explicit mentions of late documentation, missing dates where expected). If no such indicators are present, assume "Absent" or "N/A" if the document type doesn't typically have strict timeliness requirements visible in the text.
-        * **Goal:** Ensure documentation is current and available when needed for care, coding, and compliance.
+    For each criterion with score <10, provide a specific, compliant CDI query that addresses the deficiency.
     """
 
     prompt = f"""
-    You are a Senior Clinical Documentation Integrity (CDI) Specialist. Your task is to systematically assess the following clinical document section using the provided theory of high-quality documentation.
-    Apply your expertise to validate the documentation and identify any disturbances or areas for improvement.
+    {procedure_cdi_criteria}
 
-    {cdi_criteria_definitions}
+    PROCEDURE-SPECIFIC FOCUS AREAS:
+    - Excisional vs Non-excisional debridement distinction (critical for MS-DRG assignment)
+    - Specific anatomical locations and laterality
+    - Depth of tissue involvement (subcutaneous, fascia, muscle, bone)
+    - Wound measurements and characteristics
+    - Instruments used and technique details
+    - Specimens removed and pathology correlation
+    - Complications or absence thereof
 
-    For each of the first four criteria (Clinical Reliability, Clinical Precision, Documentation Completeness, Clinical Consistency & Clarity):
-    - Assign a score (0-10), where 10 is perfect and 0 is completely deficient.
-    - Explain "Why" this score was given, referencing specific issues or strengths in the document.
-    - Suggest a "Proposed CDI Action" (e.g., "Educate provider on specificity," "Query for clinical validation," "Review for conflicting documentation").
-    - If the score is less than 10, draft a clear and compliant "Draft Query" that a CDI specialist would send to the physician to clarify or improve the documentation. The query should be open-ended and non-leading.
-
-    For the "Timeliness" criterion:
-    - Flag it as "Present" if there are clear indications of timeliness issues (e.g., explicit mentions of late entries, missing dates where expected).
-    - Flag it as "Absent" if no such issues are evident from the text.
-    - Flag it as "N/A" if the document type or content doesn't provide enough information to assess timeliness.
-
-    Return your output in structured JSON like this. Ensure all fields are present, even if empty or "N/A".
+    Analyze the following procedure documentation and return results in this JSON format:
 
     {{
-      "Scorecard": {{
-        "Clinical Reliability": {{"Score": int, "Why": "str", "Proposed CDI Action": "str", "Draft Query": "str"}},
-        "Clinical Precision": {{"Score": int, "Why": "str", "Proposed CDI Action": "str", "Draft Query": "str"}},
-        "Documentation Completeness": {{"Score": int, "Why": "str", "Proposed CDI Action": "str", "Draft Query": "str"}},
-        "Clinical Consistency & Clarity": {{"Score": int, "Why": "str", "Proposed CDI Action": "str", "Draft Query": "str"}}
+      "Procedure_Analysis": {{
+        "Clinical_Reliability": {{"Score": int, "Issues": "str", "CDI_Query": "str"}},
+        "Clinical_Precision": {{"Score": int, "Issues": "str", "CDI_Query": "str"}},
+        "Documentation_Completeness": {{"Score": int, "Issues": "str", "CDI_Query": "str"}},
+        "Clinical_Consistency": {{"Score": int, "Issues": "str", "CDI_Query": "str"}},
+        "Clarity": {{"Score": int, "Issues": "str", "CDI_Query": "str"}}
       }},
-      "Timeliness Flag": "Present" | "Absent" | "N/A",
-      "Final Summary": "Overall assessment of documentation quality for this section, highlighting key strengths and areas for CDI focus."
+      "Critical_Findings": {{
+        "High_Priority_Issues": ["list of most critical documentation deficiencies"],
+        "MS_DRG_Impact": "potential impact on DRG assignment",
+        "Coding_Clarifications_Needed": ["specific areas needing physician clarification"]
+      }},
+      "Overall_Assessment": {{
+        "Total_Score": "sum of all scores out of 50",
+        "Quality_Grade": "A/B/C/D/F based on total score",
+        "Summary": "concise overall assessment focusing on procedure-specific issues"
+      }}
     }}
 
-    --- Document Section Start ---
+    --- PROCEDURE DOCUMENT ---
     {text}
-    --- Document Section End ---
+    --- END DOCUMENT ---
     """
-    response = None # Initialize response to None
+    
     for attempt in range(retries):
         try:
             response = model.generate_content(prompt)
-            # Clean the response to ensure it's valid JSON
             json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
             return json.loads(json_str)
         except json.JSONDecodeError as e:
-            st.warning(f"Attempt {attempt+1}: JSON decoding error: {e}. Retrying...")
-            time.sleep(2) # Wait before retrying
+            st.warning(f"Attempt {attempt+1}: JSON decoding error. Retrying...")
+            time.sleep(2)
         except Exception as e:
-            st.warning(f"Attempt {attempt+1}: Gemini generation error: {e}. Retrying...")
-            time.sleep(2) # Wait before retrying
-    # Ensure response is checked for None before accessing .text
-    return {"error": "Gemini failed after retries or returned invalid JSON.", "raw_response": response.text if response else "No response received"}
+            st.warning(f"Attempt {attempt+1}: Analysis error: {e}. Retrying...")
+            time.sleep(2)
+    
+    return {"error": "Analysis failed after retries", "raw_response": response.text if 'response' in locals() else "No response"}
 
-
-def generate_excel(results):
+def generate_procedure_excel_report(results):
     """
-    Generates a Pandas DataFrame from the analysis results, suitable for Excel export.
-    Includes all CDI criteria, scores, explanations, actions, and queries.
+    Generates a specialized Excel report for procedure CDI analysis.
     """
     df_rows = []
+    
     for section, result in results.items():
-        scorecard = result.get("Scorecard", {})
+        if 'error' in result:
+            continue
+            
         doc_type = result.get("Doc Type", "")
+        procedure_type = result.get("Procedure Type", "")
         confidence = result.get("Confidence", "")
-        timeliness_flag = result.get("Timeliness Flag", "N/A")
-        final_summary = result.get("Final Summary", "")
-
-        # Add a row for the overall section summary and timeliness flag
+        
+        procedure_analysis = result.get("Procedure_Analysis", {})
+        critical_findings = result.get("Critical_Findings", {})
+        overall_assessment = result.get("Overall_Assessment", {})
+        
+        # Overall section summary
         df_rows.append({
             "Section": section.title(),
-            "AI Doc Type": doc_type,
-            "Confidence %": confidence,
-            "Criterion": "Overall Section Summary",
-            "Score": "-", # No score for summary row
-            "Why": final_summary,
-            "Proposed CDI Action": "",
-            "Draft Query": "",
-            "Timeliness Flag": timeliness_flag # Display timeliness here
+            "Document_Type": doc_type,
+            "Procedure_Type": procedure_type,
+            "Confidence_%": confidence,
+            "Criterion": "OVERALL ASSESSMENT",
+            "Score": overall_assessment.get("Total_Score", ""),
+            "Grade": overall_assessment.get("Quality_Grade", ""),
+            "Issues_Identified": overall_assessment.get("Summary", ""),
+            "CDI_Query": "",
+            "Priority": "Summary"
         })
-
-        # Add rows for each detailed scorecard criterion
-        for criterion, detail in scorecard.items():
-            score = detail.get("Score", "")
-            # Only include Draft Query if score is less than 10
-            # Ensure score is convertible to int for comparison
-            try:
-                score_int = int(str(score).replace('-', '0'))
-            except ValueError:
-                score_int = 10 # Treat non-numeric scores as perfect to avoid query
-            
-            draft_query = detail.get("Draft Query", "") if score_int < 10 else ""
+        
+        # High priority issues
+        high_priority = critical_findings.get("High_Priority_Issues", [])
+        if high_priority:
             df_rows.append({
                 "Section": section.title(),
-                "AI Doc Type": doc_type,
-                "Confidence %": confidence,
-                "Criterion": criterion,
-                "Score": score,
-                "Why": detail.get("Why", ""),
-                "Proposed CDI Action": detail.get("Proposed CDI Action", ""),
-                "Draft Query": draft_query,
-                "Timeliness Flag": timeliness_flag # Repeat for consistency in rows
+                "Document_Type": doc_type,
+                "Procedure_Type": procedure_type,
+                "Confidence_%": confidence,
+                "Criterion": "HIGH PRIORITY ISSUES",
+                "Score": "",
+                "Grade": "",
+                "Issues_Identified": "; ".join(high_priority),
+                "CDI_Query": "",
+                "Priority": "HIGH"
             })
+        
+        # Individual criteria
+        for criterion, details in procedure_analysis.items():
+            score = details.get("Score", 0)
+            issues = details.get("Issues", "")
+            query = details.get("CDI_Query", "")
+            
+            # Determine priority based on score
+            if score <= 5:
+                priority = "HIGH"
+            elif score <= 7:
+                priority = "MEDIUM"
+            else:
+                priority = "LOW"
+            
+            # Only include query if score is less than 10
+            display_query = query if score < 10 else ""
+            
+            df_rows.append({
+                "Section": section.title(),
+                "Document_Type": doc_type,
+                "Procedure_Type": procedure_type,
+                "Confidence_%": confidence,
+                "Criterion": criterion.replace("_", " ").title(),
+                "Score": f"{score}/10",
+                "Grade": "",
+                "Issues_Identified": issues,
+                "CDI_Query": display_query,
+                "Priority": priority
+            })
+    
     return pd.DataFrame(df_rows)
 
-def highlight_score(val):
-    """
-    Applies conditional formatting to the 'Score' column in the DataFrame.
-    Green for good scores, yellow for moderate, red for low.
-    """
-    try:
-        score = int(val)
-        if score >= 9:
-            return 'background-color: #d9ead3'  # Light Green
-        elif score >= 7:
-            return 'background-color: #fff2cc'  # Light Yellow
-        else:
-            return 'background-color: #fce5cd'  # Light Orange
-    except ValueError: # Handle non-integer values like '-'
-        return ''
+def highlight_procedure_scores(val):
+    """Enhanced highlighting for procedure scores with priority colors."""
+    if isinstance(val, str) and "/" in val:
+        try:
+            score = int(val.split("/")[0])
+            if score >= 9:
+                return 'background-color: #d9ead3; font-weight: bold'  # Green
+            elif score >= 7:
+                return 'background-color: #fff2cc; font-weight: bold'  # Yellow
+            elif score >= 5:
+                return 'background-color: #fce5cd; font-weight: bold'  # Orange
+            else:
+                return 'background-color: #f4cccc; font-weight: bold'  # Red
+        except:
+            return ''
+    return ''
+
+def highlight_priority(val):
+    """Color code by priority level."""
+    if val == "HIGH":
+        return 'background-color: #f4cccc; color: #cc0000; font-weight: bold'
+    elif val == "MEDIUM":
+        return 'background-color: #fce5cd; color: #e69138; font-weight: bold'
+    elif val == "LOW":
+        return 'background-color: #d9ead3; color: #6aa84f; font-weight: bold'
+    return ''
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Inpatient CDI Analyzer", layout="wide")
-st.title("🩺 Inpatient CDI Analyzer: AI-Powered Clinical Documentation Review")
-st.markdown("Upload a full inpatient PDF or Word document to get a detailed CDI analysis, including scores, proposed actions, and draft queries.")
+st.set_page_config(page_title="Procedure CDI Analyzer", layout="wide")
+st.title("🏥 Procedure-Focused CDI Analyzer")
+st.markdown("**Specialized for Operative Reports, Procedure Notes, and Surgical Documentation**")
 
-uploaded_file = st.file_uploader("📤 Upload Full Inpatient Chart (.pdf or .docx)", type=["pdf", "docx"])
+# Sidebar with procedure-specific guidance
+with st.sidebar:
+    st.header("🔍 Procedure Documentation Focus")
+    st.markdown("""
+    **This analyzer specializes in:**
+    - Operative Reports
+    - Procedure Notes  
+    - Surgical Documentation
+    - Debridement Procedures
+    - Anesthesia Records
+    
+    **Key Areas Evaluated:**
+    - Excisional vs Non-excisional specification
+    - Anatomical precision & laterality
+    - Procedure indications & findings
+    - Technique documentation
+    - Specimen/pathology correlation
+    """)
+
+uploaded_file = st.file_uploader("📤 Upload Procedure Document (.pdf or .docx)", type=["pdf", "docx"])
 
 if uploaded_file:
-    with st.spinner("Processing document..."):
+    with st.spinner("Processing procedure document..."):
         if uploaded_file.name.endswith(".pdf"):
             full_text = extract_text_from_pdf(uploaded_file)
         else:
             full_text = extract_text_from_docx(uploaded_file)
 
-    st.success("✅ Document Uploaded and Processed!")
+    st.success("✅ Procedure Document Processed!")
 
-    sections = split_sections(full_text)
-    st.subheader("📑 Detected Sections")
-    st.write(f"Found {len(sections)} sections in the document.")
+    # Quick document preview
+    with st.expander("📄 Document Preview (First 1000 characters)"):
+        st.text(full_text[:1000] + "..." if len(full_text) > 1000 else full_text)
+
+    sections = split_procedure_sections(full_text)
+    st.subheader(f"📑 Detected Procedure Sections ({len(sections)} found)")
+
+    # Display sections found
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Sections Identified:**")
+        for i, section_name in enumerate(sections.keys(), 1):
+            st.write(f"{i}. {section_name.title()}")
 
     all_results = {}
 
-    # Button to analyze all sections
-    if st.button("🧠 Analyze All Sections (This may take a few minutes for large documents)"):
+    # Analyze button
+    if st.button("🧠 Analyze Procedure Documentation", type="primary"):
         progress_bar = st.progress(0)
         total_sections = len(sections)
+        
         for i, (section_name, section_text) in enumerate(sections.items()):
-            st.info(f"Analyzing section: **{section_name.title()}** ({i+1}/{total_sections})...")
-            with st.spinner(f"Analyzing: {section_name.title()}..."):
-                doc_info = categorize_section_type(section_text)
-                analysis_result = generate_gemini_analysis(section_text)
-
-                if 'error' not in analysis_result and analysis_result.get("Scorecard"):
-                    analysis_result["Doc Type"] = doc_info.get("Document Type")
-                    analysis_result["Confidence"] = doc_info.get("Confidence")
+            st.info(f"Analyzing: **{section_name.title()}** ({i+1}/{total_sections})")
+            
+            with st.spinner(f"CDI Analysis in progress..."):
+                # Categorize procedure type
+                proc_info = categorize_procedure_type(section_text)
+                
+                # Perform specialized procedure analysis
+                analysis_result = generate_procedure_cdi_analysis(section_text)
+                
+                if 'error' not in analysis_result:
+                    analysis_result["Doc Type"] = proc_info.get("Document Type")
+                    analysis_result["Procedure Type"] = proc_info.get("Procedure Type")
+                    analysis_result["Confidence"] = proc_info.get("Confidence")
                     all_results[section_name] = analysis_result
-                    st.success(f"✅ Analysis complete for **{section_name.title()}**.")
+                    st.success(f"✅ **{section_name.title()}** analyzed successfully")
                 else:
-                    st.error(f"❌ Failed to analyze section: **{section_name.title()}**. Error: {analysis_result.get('error', 'Unknown')}")
+                    st.error(f"❌ Failed to analyze **{section_name.title()}**")
+                    st.code(analysis_result.get('raw_response', 'No response'), language='text')
+            
             progress_bar.progress((i + 1) / total_sections)
-        st.success("🎉 All sections analyzed!")
+        
+        st.success("🎉 Procedure Analysis Complete!")
 
-        # Display results in a DataFrame
+        # Display comprehensive results
         if all_results:
-            st.subheader("📊 Comprehensive CDI Analysis Results")
-            df = generate_excel(all_results)
+            st.subheader("📊 Procedure CDI Analysis Results")
+            
+            df = generate_procedure_excel_report(all_results)
+            
+            if not df.empty:
+                # Apply styling
+                styled_df = df.style.applymap(highlight_procedure_scores, subset=['Score']) \
+                                 .applymap(highlight_priority, subset=['Priority'])
+                
+                st.dataframe(styled_df, use_container_width=True, height=600)
+                
+                # Summary metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                # Calculate summary stats
+                high_priority_count = len(df[df['Priority'] == 'HIGH'])
+                medium_priority_count = len(df[df['Priority'] == 'MEDIUM'])
+                
+                with col1:
+                    st.metric("High Priority Issues", high_priority_count)
+                with col2:
+                    st.metric("Medium Priority Issues", medium_priority_count)
+                with col3:
+                    avg_scores = []
+                    for section, result in all_results.items():
+                        if 'Overall_Assessment' in result:
+                            total_score = result['Overall_Assessment'].get('Total_Score', '0/50')
+                            if isinstance(total_score, str) and '/' in total_score:
+                                score = int(total_score.split('/')[0])
+                                avg_scores.append(score)
+                    avg_score = sum(avg_scores) / len(avg_scores) if avg_scores else 0
+                    st.metric("Avg Quality Score", f"{avg_score:.1f}/50")
+                with col4:
+                    procedure_types = set()
+                    for result in all_results.values():
+                        if result.get('Procedure Type'):
+                            procedure_types.add(result['Procedure Type'])
+                    st.metric("Procedure Types", len(procedure_types))
 
-            if 'Score' in df.columns:
-                # Apply styling only to rows that are actual criterion scores, not summary rows
-                styled_df = df.style.applymap(highlight_score, subset=['Score'])
-                st.dataframe(styled_df, use_container_width=True)
-            else:
-                st.warning("⚠️ No valid 'Score' column found in results. Showing raw output.")
-                st.dataframe(df, use_container_width=True)
+                # Download options
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Excel download
+                    with BytesIO() as buffer:
+                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                            df.to_excel(writer, index=False, sheet_name='Procedure_CDI_Analysis')
+                            
+                            # Get workbook and worksheet
+                            workbook = writer.book
+                            worksheet = writer.sheets['Procedure_CDI_Analysis']
+                            
+                            # Add formatting
+                            high_priority_format = workbook.add_format({
+                                'bg_color': '#f4cccc',
+                                'font_color': '#cc0000',
+                                'bold': True
+                            })
+                            
+                            # Apply conditional formatting
+                            worksheet.conditional_format('I:I', {
+                                'type': 'text',
+                                'criteria': 'containing',
+                                'value': 'HIGH',
+                                'format': high_priority_format
+                            })
+                        
+                        st.download_button(
+                            "📥 Download Excel Report", 
+                            buffer.getvalue(), 
+                            file_name="Procedure_CDI_Analysis.xlsx", 
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
-            # Download buttons
-            col1, col2 = st.columns(2)
-            with col1:
-                with BytesIO() as buffer:
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False)
-                    st.download_button("📥 Download Excel Report", buffer.getvalue(), file_name="CDI_Analysis_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            with col2:
-                txt_summary = ""
-                for sec, res in all_results.items():
-                    txt_summary += f"\n\n=== {sec.title()} (AI Doc Type: {res.get('Doc Type', '')}, Confidence: {res.get('Confidence', '')}%) ===\n"
-                    txt_summary += f"Overall Summary: {res.get('Final Summary', 'N/A')}\n"
-                    txt_summary += f"Timeliness Flag: {res.get('Timeliness Flag', 'N/A')}\n"
-                    if 'error' in res:
-                        txt_summary += "Error during analysis.\n"
-                    else:
-                        for k, v in res.get("Scorecard", {}).items():
-                            score = v.get('Score', '-')
-                            why = v.get('Why', '')
-                            action = v.get('Proposed CDI Action', '')
-                            query = v.get('Draft Query', '')
+                with col2:
+                    # Generate summary report
+                    summary_report = "PROCEDURE CDI ANALYSIS SUMMARY REPORT\n"
+                    summary_report += "=" * 50 + "\n\n"
+                    
+                    for section, result in all_results.items():
+                        summary_report += f"SECTION: {section.title()}\n"
+                        summary_report += f"Document Type: {result.get('Doc Type', 'Unknown')}\n"
+                        summary_report += f"Procedure Type: {result.get('Procedure Type', 'Unknown')}\n"
+                        
+                        if 'Overall_Assessment' in result:
+                            oa = result['Overall_Assessment']
+                            summary_report += f"Overall Score: {oa.get('Total_Score', 'N/A')}\n"
+                            summary_report += f"Quality Grade: {oa.get('Quality_Grade', 'N/A')}\n"
+                            summary_report += f"Summary: {oa.get('Summary', 'N/A')}\n"
+                        
+                        if 'Critical_Findings' in result:
+                            cf = result['Critical_Findings']
+                            high_priority = cf.get('High_Priority_Issues', [])
+                            if high_priority:
+                                summary_report += f"\nHIGH PRIORITY ISSUES:\n"
+                                for issue in high_priority:
+                                    summary_report += f"• {issue}\n"
+                            
+                            ms_drg = cf.get('MS_DRG_Impact', '')
+                            if ms_drg:
+                                summary_report += f"MS-DRG Impact: {ms_drg}\n"
+                        
+                        summary_report += "\n" + "-" * 40 + "\n\n"
+                    
+                    st.download_button(
+                        "📄 Download Summary Report", 
+                        summary_report, 
+                        file_name="Procedure_CDI_Summary.txt", 
+                        mime="text/plain"
+                    )
 
-                            txt_summary += f"\n--- {k} (Score: {score}/10) ---\n"
-                            txt_summary += f"Why: {why}\n"
-                            txt_summary += f"Proposed CDI Action: {action}\n"
-                            if query: # Only add query if it's not empty
-                                txt_summary += f"→ Draft Query: {query}\n"
-                st.download_button("📄 Download TXT Report", txt_summary, file_name="CDI_Queries_Report.txt", mime="text/plain")
-        else:
-            st.info("No analysis results to display yet. Upload a document and click 'Analyze All Sections'.")
+# Information section
+st.markdown("---")
+st.subheader("ℹ️ About Procedure CDI Analysis")
+st.markdown("""
+This specialized analyzer focuses on the unique documentation requirements for procedures and operative reports:
 
-    st.markdown("---")
-    st.subheader("🔍 Analyze Individual Sections")
-    st.info("You can also expand a section below and analyze it individually.")
+**Key Evaluation Areas:**
+- **Precision**: Specific procedure types, anatomical locations, measurements
+- **Completeness**: All required elements (indications, technique, findings, complications)
+- **Reliability**: Procedures match documented indications and findings
+- **MS-DRG Impact**: Critical distinctions affecting reimbursement (e.g., excisional vs non-excisional debridement)
 
-    # Display individual sections with an analyze button for each
-    for i, (section_name, section_text) in enumerate(sections.items()):
-        with st.expander(f"📄 Section {i+1}: {section_name.title()}"):
-            st.text_area(f"Content of '{section_name.title()}' (first 2000 chars)", section_text[:2000], height=200, key=f"text_area_{i}")
-            if st.button(f"🔍 Analyze '{section_name.title()}' Individually", key=f"analyze_single_{i}"):
-                with st.spinner(f"Analyzing '{section_name.title()}' with Gemini..."):
-                    doc_info = categorize_section_type(section_text)
-                    result = generate_gemini_analysis(section_text)
-                    result["Doc Type"] = doc_info.get("Document Type")
-                    result["Confidence"] = doc_info.get("Confidence")
-
-                    if 'error' not in result:
-                        st.success(f"✅ Analysis for '{section_name.title()}' complete!")
-                        st.json(result) # Display raw JSON for single section analysis
-                    else:
-                        st.error(f"❌ Failed to analyze '{section_name.title()}'. Error: {result.get('error', 'Unknown')}")
-                        if 'raw_response' in result:
-                            st.code(result['raw_response'], language='json') # Show raw response for debugging
+**Common Procedure Documentation Issues:**
+- Vague procedure descriptions
+- Missing anatomical specificity
+- Incomplete wound/specimen documentation
+- Inconsistent pre/post-operative diagnoses
+- Missing complication documentation
+""")
