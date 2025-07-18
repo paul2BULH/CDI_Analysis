@@ -117,29 +117,229 @@ def categorize_procedure_type(text):
         st.warning(f"Error categorizing procedure type: {e}")
         return {"Document Type": "Unknown", "Procedure Type": "Unknown", "Confidence": 0}
 
-def generate_procedure_cdi_analysis(text, retries=3):
+def procedure_specific_validation(text, procedure_type):
     """
-    Specialized CDI analysis for procedure documentation focusing on the 7 critical criteria
-    with procedure-specific emphasis.
+    AI-powered procedure-specific validation that knows exactly what each procedure type requires.
+    """
+    validation_prompt = f"""
+    You are an expert in {procedure_type} documentation requirements. Based on the procedure type, validate if all required elements are present:
+
+    PROCEDURE-SPECIFIC REQUIREMENTS DATABASE:
+
+    **Excisional Debridement:**
+    - Required: Anatomical location with laterality, depth of debridement (subcutaneous/fascia/muscle/bone), size measurements (length x width x depth), tissue type removed, instruments used, hemostasis method, wound appearance post-debridement
+    - Critical Distinctions: "Excisional" vs "non-excisional" (affects MS-DRG 907-908 vs 573-574)
+
+    **Appendectomy:**
+    - Required: Approach (open/laparoscopic), appendix condition (perforated/gangrenous/simple), complications, specimen description
+    - Critical Distinctions: Complicated vs uncomplicated appendicitis
+
+    **Colonoscopy:**
+    - Required: Extent of examination, quality of preparation, findings by segment, interventions performed, withdrawal time
+    - Critical Distinctions: Screening vs diagnostic, polyp characteristics
+
+    **Cardiac Catheterization:**
+    - Required: Access site, vessels examined, findings per vessel, interventions, complications, closure method
+    - Critical Distinctions: Diagnostic vs interventional
+
+    **Skin Lesion Excision:**
+    - Required: Lesion location, size, margins, closure type, specimen handling, pathology disposition
+    - Critical Distinctions: Simple vs complex repair
+
+    Analyze the provided text and identify:
+    1. Missing required elements for this specific procedure type
+    2. Elements that need more specificity
+    3. Critical distinctions that affect coding/billing
+
+    --- PROCEDURE TEXT ---
+    {text}
+    --- END TEXT ---
+
+    Return JSON: {{"Missing_Elements": ["list"], "Needs_Specificity": ["list"], "Critical_Issues": ["list"], "Compliance_Score": int_0_to_10}}
     """
     
+    try:
+        response = model.generate_content(validation_prompt)
+        json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
+        return json.loads(json_str)
+    except:
+        return {"Missing_Elements": [], "Needs_Specificity": [], "Critical_Issues": [], "Compliance_Score": 5}
+
+def anatomical_intelligence_check(text):
+    """
+    AI that understands anatomy and flags imprecise locations.
+    """
+    anatomy_prompt = f"""
+    You are an expert in anatomical precision for medical documentation. Analyze the text for anatomical location accuracy and specificity.
+
+    ANATOMICAL PRECISION STANDARDS:
+    
+    **Specificity Levels (Best to Worst):**
+    - Excellent: "Left lower extremity, anterior tibial region, distal third"
+    - Good: "Left lower leg, anterior aspect"  
+    - Fair: "Left lower leg"
+    - Poor: "Lower extremity" or "Leg"
+    - Unacceptable: "Extremity" or no location
+
+    **Required Elements:**
+    - Laterality (left/right/bilateral)
+    - Anatomical region (specific body part)
+    - Anatomical landmarks when relevant
+    - Orientation (anterior/posterior/medial/lateral)
+    - Level/section when relevant (proximal/middle/distal third)
+
+    **Common Issues:**
+    - Missing laterality
+    - Vague terms ("area", "region" without specifics)
+    - Inconsistent location descriptions
+    - Missing anatomical landmarks for procedures
+
+    Analyze the text and identify:
+    1. All anatomical locations mentioned
+    2. Precision level of each location
+    3. Missing anatomical details
+    4. Inconsistencies in location descriptions
+
+    --- TEXT ---
+    {text}
+    --- END TEXT ---
+
+    Return JSON: {{"Locations_Found": ["list with precision scores"], "Missing_Details": ["list"], "Inconsistencies": ["list"], "Overall_Precision": int_0_to_10}}
+    """
+    
+    try:
+        response = model.generate_content(anatomy_prompt)
+        json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
+        return json.loads(json_str)
+    except:
+        return {"Locations_Found": [], "Missing_Details": [], "Inconsistencies": [], "Overall_Precision": 5}
+
+def clinical_correlation_analysis(text):
+    """
+    AI that validates procedures match clinical indications.
+    """
+    correlation_prompt = f"""
+    You are an expert in clinical correlation analysis. Validate that documented procedures logically match the clinical indications and findings.
+
+    CLINICAL CORRELATION RULES:
+
+    **Procedure-Indication Matching:**
+    - Debridement → Necrotic tissue, infected wound, chronic ulcer
+    - Appendectomy → Appendicitis, RLQ pain, elevated WBC
+    - Colonoscopy → GI bleeding, screening, polyp surveillance
+    - Cardiac cath → Chest pain, abnormal stress test, MI
+    - Skin excision → Suspicious lesion, malignancy
+
+    **Red Flags:**
+    - Procedure without clear indication
+    - Indication without supporting clinical evidence
+    - Procedures that don't match severity of condition
+    - Missing diagnostic workup before procedure
+
+    **Clinical Evidence Requirements:**
+    - Labs/imaging supporting diagnosis
+    - Physical exam findings
+    - Patient symptoms
+    - Failed conservative measures (when applicable)
+
+    Analyze the correlation between indications, clinical evidence, and procedures performed:
+
+    --- TEXT ---
+    {text}
+    --- END TEXT ---
+
+    Return JSON: {{"Indication_Match": int_0_to_10, "Missing_Evidence": ["list"], "Logic_Issues": ["list"], "Recommendations": ["list"]}}
+    """
+    
+    try:
+        response = model.generate_content(correlation_prompt)
+        json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
+        return json.loads(json_str)
+    except:
+        return {"Indication_Match": 5, "Missing_Evidence": [], "Logic_Issues": [], "Recommendations": []}
+
+def coding_prediction_analysis(text, procedure_type):
+    """
+    AI that predicts final codes and flags potential coding issues.
+    """
+    coding_prompt = f"""
+    You are an expert in medical coding with deep knowledge of CPT, ICD-10-PCS, and MS-DRG assignments. Predict coding issues for this {procedure_type}.
+
+    CODING PREDICTION DATABASE:
+
+    **Debridement Procedures:**
+    - CPT 11042-11047 (based on depth and size)
+    - Critical: "Excisional" vs "Non-excisional" affects code selection
+    - MS-DRG impact: 907-908 vs 573-574
+    - Documentation needs: Depth, size, tissue type
+
+    **Appendectomy:**
+    - CPT 44970 (laparoscopic) vs 44960 (open)
+    - ICD-10: K35-K37 (appendicitis variations)
+    - MS-DRG 338-340 (complicated vs uncomplicated)
+
+    **Skin Procedures:**
+    - CPT based on size and complexity
+    - Benign vs malignant affects DRG assignment
+    - Repair complexity affects additional codes
+
+    **Common Coding Issues:**
+    - Insufficient detail for code specificity
+    - Missing size measurements
+    - Unclear procedure approach
+    - Missing complication documentation
+    - Inadequate anatomical specificity
+
+    Based on the documentation, predict:
+    1. Likely CPT codes
+    2. Potential ICD-10 codes
+    3. MS-DRG implications
+    4. Documentation gaps that could affect coding
+    5. Revenue impact of missing details
+
+    --- TEXT ---
+    {text}
+    --- END TEXT ---
+
+    Return JSON: {{"Predicted_CPT": ["list"], "Predicted_ICD10": ["list"], "MS_DRG_Risk": "str", "Coding_Gaps": ["list"], "Revenue_Impact": "str"}}
+    """
+    
+    try:
+        response = model.generate_content(coding_prompt)
+        json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
+        return json.loads(json_str)
+    except:
+        return {"Predicted_CPT": [], "Predicted_ICD10": [], "MS_DRG_Risk": "Unknown", "Coding_Gaps": [], "Revenue_Impact": "Unknown"}
+
+def generate_procedure_cdi_analysis(text, retries=3):
+def generate_procedure_cdi_analysis(text, procedure_type="Unknown", retries=3):
+    """
+    Enhanced CDI analysis with AI-powered procedure-specific validation, anatomical intelligence,
+    clinical correlation, and coding prediction.
+    """
+    
+    # Run the 4 advanced AI analyses
+    procedure_validation = procedure_specific_validation(text, procedure_type)
+    anatomical_analysis = anatomical_intelligence_check(text)
+    clinical_correlation = clinical_correlation_analysis(text)
+    coding_prediction = coding_prediction_analysis(text, procedure_type)
+    
     procedure_cdi_criteria = """
-    You are a Senior CDI Specialist specializing in PROCEDURE DOCUMENTATION. Evaluate this procedure document against these 5 critical criteria:
+    You are a Senior CDI Specialist with advanced AI-powered analytical capabilities. Using the provided AI analysis results, evaluate this procedure document against the 5 critical criteria:
 
     1. **Clinical Reliability (Score 0-10):**
        - Do the procedures performed match the documented indications?
        - Is the preoperative diagnosis supported by the procedure findings?
        - Are treatments/interventions consistent with documented conditions?
-       - Example Issue: Excisional debridement performed but no clear indication documented
        
     2. **Clinical Precision (Score 0-10):**
-       - Are anatomical locations specific? (e.g., "left lower leg" vs "leg")
-       - Is procedure type clearly specified? (e.g., "excisional" vs "non-excisional" debridement)
+       - Are anatomical locations specific and accurate?
+       - Is procedure type clearly specified with all critical distinctions?
        - Are measurements exact and complete?
        - Are instruments and techniques precisely documented?
        
     3. **Documentation Completeness (Score 0-10):**
-       - All required elements present: indications, technique, findings, specimens, complications?
+       - All required elements present for this specific procedure type?
        - Are abnormal findings addressed with clinical significance?
        - Missing elements that should be documented?
        
@@ -152,7 +352,6 @@ def generate_procedure_cdi_analysis(text, retries=3):
        - Is the procedure description unambiguous?
        - Are findings clearly explained?
        - Would another surgeon understand exactly what was done?
-       - Any vague terms that need clarification?
 
     For each criterion with score <10, provide a specific, compliant CDI query that addresses the deficiency.
     """
@@ -160,16 +359,34 @@ def generate_procedure_cdi_analysis(text, retries=3):
     prompt = f"""
     {procedure_cdi_criteria}
 
-    PROCEDURE-SPECIFIC FOCUS AREAS:
-    - Excisional vs Non-excisional debridement distinction (critical for MS-DRG assignment)
-    - Specific anatomical locations and laterality
-    - Depth of tissue involvement (subcutaneous, fascia, muscle, bone)
-    - Wound measurements and characteristics
-    - Instruments used and technique details
-    - Specimens removed and pathology correlation
-    - Complications or absence thereof
+    ADVANCED AI ANALYSIS RESULTS:
+    
+    **Procedure-Specific Validation:**
+    - Missing Elements: {procedure_validation.get('Missing_Elements', [])}
+    - Needs Specificity: {procedure_validation.get('Needs_Specificity', [])}
+    - Critical Issues: {procedure_validation.get('Critical_Issues', [])}
+    - Compliance Score: {procedure_validation.get('Compliance_Score', 5)}/10
+    
+    **Anatomical Intelligence:**
+    - Locations Found: {anatomical_analysis.get('Locations_Found', [])}
+    - Missing Details: {anatomical_analysis.get('Missing_Details', [])}
+    - Inconsistencies: {anatomical_analysis.get('Inconsistencies', [])}
+    - Precision Score: {anatomical_analysis.get('Overall_Precision', 5)}/10
+    
+    **Clinical Correlation:**
+    - Indication Match Score: {clinical_correlation.get('Indication_Match', 5)}/10
+    - Missing Evidence: {clinical_correlation.get('Missing_Evidence', [])}
+    - Logic Issues: {clinical_correlation.get('Logic_Issues', [])}
+    - Recommendations: {clinical_correlation.get('Recommendations', [])}
+    
+    **Coding Prediction:**
+    - Predicted CPT: {coding_prediction.get('Predicted_CPT', [])}
+    - Predicted ICD-10: {coding_prediction.get('Predicted_ICD10', [])}
+    - MS-DRG Risk: {coding_prediction.get('MS_DRG_Risk', 'Unknown')}
+    - Coding Gaps: {coding_prediction.get('Coding_Gaps', [])}
+    - Revenue Impact: {coding_prediction.get('Revenue_Impact', 'Unknown')}
 
-    Analyze the following procedure documentation and return results in this JSON format:
+    Using these AI insights, provide comprehensive CDI analysis in this JSON format:
 
     {{
       "Procedure_Analysis": {{
@@ -179,15 +396,23 @@ def generate_procedure_cdi_analysis(text, retries=3):
         "Clinical_Consistency": {{"Score": int, "Issues": "str", "CDI_Query": "str"}},
         "Clarity": {{"Score": int, "Issues": "str", "CDI_Query": "str"}}
       }},
+      "AI_Enhanced_Findings": {{
+        "Procedure_Validation_Issues": {procedure_validation.get('Critical_Issues', [])},
+        "Anatomical_Precision_Issues": {anatomical_analysis.get('Missing_Details', [])},
+        "Clinical_Correlation_Issues": {clinical_correlation.get('Logic_Issues', [])},
+        "Coding_Risk_Factors": {coding_prediction.get('Coding_Gaps', [])}
+      }},
       "Critical_Findings": {{
-        "High_Priority_Issues": ["list of most critical documentation deficiencies"],
-        "MS_DRG_Impact": "potential impact on DRG assignment",
-        "Coding_Clarifications_Needed": ["specific areas needing physician clarification"]
+        "High_Priority_Issues": ["AI-identified most critical documentation deficiencies"],
+        "MS_DRG_Impact": "{coding_prediction.get('MS_DRG_Risk', 'Unknown')}",
+        "Revenue_Impact": "{coding_prediction.get('Revenue_Impact', 'Unknown')}",
+        "Coding_Clarifications_Needed": {coding_prediction.get('Coding_Gaps', [])}
       }},
       "Overall_Assessment": {{
         "Total_Score": "sum of all scores out of 50",
         "Quality_Grade": "A/B/C/D/F based on total score",
-        "Summary": "concise overall assessment focusing on procedure-specific issues"
+        "Summary": "AI-enhanced assessment focusing on procedure-specific issues",
+        "AI_Confidence": "High/Medium/Low based on analysis quality"
       }}
     }}
 
@@ -200,7 +425,17 @@ def generate_procedure_cdi_analysis(text, retries=3):
         try:
             response = model.generate_content(prompt)
             json_str = response.text.strip().replace("```json\n", "").replace("\n```", "")
-            return json.loads(json_str)
+            result = json.loads(json_str)
+            
+            # Add the individual AI analysis results to the final output
+            result["Detailed_AI_Analysis"] = {
+                "Procedure_Validation": procedure_validation,
+                "Anatomical_Analysis": anatomical_analysis,
+                "Clinical_Correlation": clinical_correlation,
+                "Coding_Prediction": coding_prediction
+            }
+            
+            return result
         except json.JSONDecodeError as e:
             st.warning(f"Attempt {attempt+1}: JSON decoding error. Retrying...")
             time.sleep(2)
@@ -380,8 +615,11 @@ if uploaded_file:
                 # Categorize procedure type
                 proc_info = categorize_procedure_type(section_text)
                 
-                # Perform specialized procedure analysis
-                analysis_result = generate_procedure_cdi_analysis(section_text)
+                # Perform AI-enhanced procedure analysis
+                analysis_result = generate_procedure_cdi_analysis(
+                    section_text, 
+                    proc_info.get("Procedure Type", "Unknown")
+                )
                 
                 if 'error' not in analysis_result:
                     analysis_result["Doc Type"] = proc_info.get("Document Type")
@@ -410,7 +648,46 @@ if uploaded_file:
                 
                 st.dataframe(styled_df, use_container_width=True, height=600)
                 
-                # Summary metrics
+                # Display AI-enhanced insights
+                if 'Detailed_AI_Analysis' in result:
+                    with st.expander("🤖 AI-Enhanced Analysis Details"):
+                        ai_analysis = result['Detailed_AI_Analysis']
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.subheader("🔍 Procedure Validation")
+                            pv = ai_analysis['Procedure_Validation']
+                            st.metric("Compliance Score", f"{pv.get('Compliance_Score', 0)}/10")
+                            if pv.get('Missing_Elements'):
+                                st.error("Missing Elements:")
+                                for elem in pv['Missing_Elements']:
+                                    st.write(f"• {elem}")
+                            
+                            st.subheader("🎯 Coding Prediction")
+                            cp = ai_analysis['Coding_Prediction']
+                            if cp.get('Predicted_CPT'):
+                                st.info(f"Predicted CPT: {', '.join(cp['Predicted_CPT'])}")
+                            if cp.get('MS_DRG_Risk'):
+                                st.warning(f"MS-DRG Risk: {cp['MS_DRG_Risk']}")
+                        
+                        with col2:
+                            st.subheader("📍 Anatomical Intelligence")
+                            aa = ai_analysis['Anatomical_Analysis']
+                            st.metric("Precision Score", f"{aa.get('Overall_Precision', 0)}/10")
+                            if aa.get('Missing_Details'):
+                                st.warning("Needs More Anatomical Detail:")
+                                for detail in aa['Missing_Details']:
+                                    st.write(f"• {detail}")
+                            
+                            st.subheader("🔗 Clinical Correlation")
+                            cc = ai_analysis['Clinical_Correlation']
+                            st.metric("Correlation Score", f"{cc.get('Indication_Match', 0)}/10")
+                            if cc.get('Logic_Issues'):
+                                st.error("Logic Issues:")
+                                for issue in cc['Logic_Issues']:
+                                    st.write(f"• {issue}")
+                
+                # Enhanced summary metrics with AI insights
                 col1, col2, col3, col4 = st.columns(4)
                 
                 # Calculate summary stats
@@ -432,11 +709,20 @@ if uploaded_file:
                     avg_score = sum(avg_scores) / len(avg_scores) if avg_scores else 0
                     st.metric("Avg Quality Score", f"{avg_score:.1f}/50")
                 with col4:
-                    procedure_types = set()
+                    # AI confidence scoring
+                    ai_confidence_scores = []
                     for result in all_results.values():
-                        if result.get('Procedure Type'):
-                            procedure_types.add(result['Procedure Type'])
-                    st.metric("Procedure Types", len(procedure_types))
+                        if 'Overall_Assessment' in result:
+                            ai_conf = result['Overall_Assessment'].get('AI_Confidence', 'Medium')
+                            if ai_conf == 'High':
+                                ai_confidence_scores.append(3)
+                            elif ai_conf == 'Medium':
+                                ai_confidence_scores.append(2)
+                            else:
+                                ai_confidence_scores.append(1)
+                    avg_confidence = sum(ai_confidence_scores) / len(ai_confidence_scores) if ai_confidence_scores else 2
+                    confidence_label = "High" if avg_confidence >= 2.5 else "Medium" if avg_confidence >= 1.5 else "Low"
+                    st.metric("AI Confidence", confidence_label)
 
                 # Download options
                 col1, col2 = st.columns(2)
@@ -488,17 +774,25 @@ if uploaded_file:
                             summary_report += f"Quality Grade: {oa.get('Quality_Grade', 'N/A')}\n"
                             summary_report += f"Summary: {oa.get('Summary', 'N/A')}\n"
                         
-                        if 'Critical_Findings' in result:
-                            cf = result['Critical_Findings']
-                            high_priority = cf.get('High_Priority_Issues', [])
-                            if high_priority:
-                                summary_report += f"\nHIGH PRIORITY ISSUES:\n"
-                                for issue in high_priority:
-                                    summary_report += f"• {issue}\n"
-                            
-                            ms_drg = cf.get('MS_DRG_Impact', '')
-                            if ms_drg:
-                                summary_report += f"MS-DRG Impact: {ms_drg}\n"
+                        if 'AI_Enhanced_Findings' in result:
+                            aef = result['AI_Enhanced_Findings']
+                            summary_report += f"\n--- AI-ENHANCED FINDINGS ---\n"
+                            if aef.get('Procedure_Validation_Issues'):
+                                summary_report += f"Procedure Validation Issues: {'; '.join(aef['Procedure_Validation_Issues'])}\n"
+                            if aef.get('Anatomical_Precision_Issues'):
+                                summary_report += f"Anatomical Precision Issues: {'; '.join(aef['Anatomical_Precision_Issues'])}\n"
+                            if aef.get('Clinical_Correlation_Issues'):
+                                summary_report += f"Clinical Correlation Issues: {'; '.join(aef['Clinical_Correlation_Issues'])}\n"
+                            if aef.get('Coding_Risk_Factors'):
+                                summary_report += f"Coding Risk Factors: {'; '.join(aef['Coding_Risk_Factors'])}\n"
+                        
+                        if 'Detailed_AI_Analysis' in result:
+                            da = result['Detailed_AI_Analysis']
+                            summary_report += f"\n--- DETAILED AI INSIGHTS ---\n"
+                            if 'Coding_Prediction' in da:
+                                cp = da['Coding_Prediction']
+                                summary_report += f"Predicted CPT Codes: {', '.join(cp.get('Predicted_CPT', []))}\n"
+                                summary_report += f"Revenue Impact: {cp.get('Revenue_Impact', 'Unknown')}\n"
                         
                         summary_report += "\n" + "-" * 40 + "\n\n"
                     
