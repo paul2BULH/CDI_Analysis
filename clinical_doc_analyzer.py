@@ -173,6 +173,7 @@ def generate_gemini_analysis(text, retries=3):
     {text}
     --- Document Section End ---
     """
+    response = None # Initialize response to None
     for attempt in range(retries):
         try:
             response = model.generate_content(prompt)
@@ -185,7 +186,8 @@ def generate_gemini_analysis(text, retries=3):
         except Exception as e:
             st.warning(f"Attempt {attempt+1}: Gemini generation error: {e}. Retrying...")
             time.sleep(2) # Wait before retrying
-    return {"error": "Gemini failed after retries or returned invalid JSON.", "raw_response": response.text if 'response' in locals() else "No response"}
+    # Ensure response is checked for None before accessing .text
+    return {"error": "Gemini failed after retries or returned invalid JSON.", "raw_response": response.text if response else "No response received"}
 
 
 def generate_excel(results):
@@ -218,7 +220,13 @@ def generate_excel(results):
         for criterion, detail in scorecard.items():
             score = detail.get("Score", "")
             # Only include Draft Query if score is less than 10
-            draft_query = detail.get("Draft Query", "") if int(str(score).replace('-', '0')) < 10 else ""
+            # Ensure score is convertible to int for comparison
+            try:
+                score_int = int(str(score).replace('-', '0'))
+            except ValueError:
+                score_int = 10 # Treat non-numeric scores as perfect to avoid query
+            
+            draft_query = detail.get("Draft Query", "") if score_int < 10 else ""
             df_rows.append({
                 "Section": section.title(),
                 "AI Doc Type": doc_type,
