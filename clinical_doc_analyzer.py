@@ -64,7 +64,7 @@ Respond in JSON like: {{"Document Type": str, "Confidence": int}}
         response = model.generate_content(prompt)
         return json.loads(response.text)
     except:
-        return {"Document Type": "Unknown", "Confidence": 0}
+        return {{"Document Type": "Unknown", "Confidence": 0}}
 
 def generate_gemini_analysis(text, retries=2):
     prompt = f"""
@@ -99,19 +99,19 @@ Return your output in structured JSON like this:
         try:
             response = model.generate_content(prompt)
             return json.loads(response.text)
-        except Exception:
+        except Exception as e:
             time.sleep(2)
-    return {"error": "Gemini failed after retries."}
+    return {{"error": "Gemini failed after retries."}}
 
 def generate_excel(results):
     df_rows = []
     for section, result in results.items():
-        scorecard = result.get("Scorecard", {})
+        scorecard = result.get("Scorecard", {{}})
         doc_type = result.get("Doc Type", "")
         confidence = result.get("Confidence", "")
         for criterion, detail in scorecard.items():
             score = detail.get("Score", "")
-            df_rows.append({
+            df_rows.append({{
                 "Section": section.title(),
                 "AI Doc Type": doc_type,
                 "Confidence %": confidence,
@@ -120,18 +120,18 @@ def generate_excel(results):
                 "Why": detail.get("Why", ""),
                 "CDI Action": detail.get("CDI Action", ""),
                 "Draft Query": detail.get("Draft Query", "")
-            })
+            }})
     return pd.DataFrame(df_rows)
 
 def highlight_score(val):
     try:
         score = int(val)
         if score <= 6:
-            return 'background-color: #ffcccc'
+            return 'background-color: #ffcccc'  # red
         elif score <= 8:
-            return 'background-color: #fff2cc'
+            return 'background-color: #fff2cc'  # yellow
         else:
-            return 'background-color: #d9ead3'
+            return 'background-color: #d9ead3'  # green
     except:
         return ''
 
@@ -142,28 +142,39 @@ st.title("🩺 Inpatient CDI Analyzer")
 uploaded_file = st.file_uploader("📤 Upload Full Inpatient Chart (.pdf or .docx)", type=["pdf", "docx"])
 
 if uploaded_file:
-    full_text = extract_text_from_pdf(uploaded_file) if uploaded_file.name.endswith(".pdf") else extract_text_from_docx(uploaded_file)
+    if uploaded_file.name.endswith(".pdf"):
+        full_text = extract_text_from_pdf(uploaded_file)
+    else:
+        full_text = extract_text_from_docx(uploaded_file)
+
     st.success("✅ Document Uploaded and Processed")
 
     sections = split_sections(full_text)
     st.subheader("📑 Detected Sections")
 
-    all_results = {}
+    all_results = {{}}
 
     if st.button("🧠 Analyze All Sections"):
         for i, (section_name, section_text) in enumerate(sections.items()):
             with st.spinner(f"Analyzing: {section_name.title()}..."):
                 doc_info = categorize_section_type(section_text)
                 result = generate_gemini_analysis(section_text)
-                result["Doc Type"] = doc_info.get("Document Type")
-                result["Confidence"] = doc_info.get("Confidence")
-                all_results[section_name] = result
+                if 'error' not in result and result.get("Scorecard"):
+                    result["Doc Type"] = doc_info.get("Document Type")
+                    result["Confidence"] = doc_info.get("Confidence")
+                    all_results[section_name] = result
+                else:
+                    st.warning(f"❌ Failed to analyze section: {section_name.title()}")
 
         st.success("✅ All sections analyzed!")
 
         df = generate_excel(all_results)
-        styled_df = df.style.applymap(highlight_score, subset=['Score'])
-        st.dataframe(styled_df, use_container_width=True)
+        if 'Score' in df.columns:
+            styled_df = df.style.applymap(highlight_score, subset=['Score'])
+            st.dataframe(styled_df, use_container_width=True)
+        else:
+            st.warning("⚠️ No valid 'Score' column found in results. Showing raw output.")
+            st.dataframe(df, use_container_width=True)
 
         with BytesIO() as buffer:
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
@@ -176,7 +187,7 @@ if uploaded_file:
             if 'error' in res:
                 txt_summary += "Error during analysis."
             else:
-                for k, v in res.get("Scorecard", {}).items():
+                for k, v in res.get("Scorecard", {{}}).items():
                     txt_summary += f"\n{k} ({v.get('Score', '-')}/10): {v.get('Why', '')}"
                     if int(v.get("Score", 10)) < 10:
                         txt_summary += f"\n→ Draft Query: {v.get('Draft Query', '')}"
