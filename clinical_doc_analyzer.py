@@ -18,7 +18,8 @@ else:
     st.error("❌ Gemini API key not configured. Please set it in .streamlit/secrets.toml")
     st.stop()
 
-model = genai.GenerativeModel('gemini-pro')
+# Changed the model from 'gemini-pro' to 'gemini-2.0-flash' for broader availability and compatibility.
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 # --- Helper Functions ---
 
