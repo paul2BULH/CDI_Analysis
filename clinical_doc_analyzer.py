@@ -311,7 +311,6 @@ def coding_prediction_analysis(text, procedure_type):
     except:
         return {"Predicted_CPT": [], "Predicted_ICD10": [], "MS_DRG_Risk": "Unknown", "Coding_Gaps": [], "Revenue_Impact": "Unknown"}
 
-def generate_procedure_cdi_analysis(text, retries=3):
 def generate_procedure_cdi_analysis(text, procedure_type="Unknown", retries=3):
     """
     Enhanced CDI analysis with AI-powered procedure-specific validation, anatomical intelligence,
@@ -328,30 +327,30 @@ def generate_procedure_cdi_analysis(text, procedure_type="Unknown", retries=3):
     You are a Senior CDI Specialist with advanced AI-powered analytical capabilities. Using the provided AI analysis results, evaluate this procedure document against the 5 critical criteria:
 
     1. **Clinical Reliability (Score 0-10):**
-       - Do the procedures performed match the documented indications?
-       - Is the preoperative diagnosis supported by the procedure findings?
-       - Are treatments/interventions consistent with documented conditions?
-       
+        - Do the procedures performed match the documented indications?
+        - Is the preoperative diagnosis supported by the procedure findings?
+        - Are treatments/interventions consistent with documented conditions?
+        
     2. **Clinical Precision (Score 0-10):**
-       - Are anatomical locations specific and accurate?
-       - Is procedure type clearly specified with all critical distinctions?
-       - Are measurements exact and complete?
-       - Are instruments and techniques precisely documented?
-       
+        - Are anatomical locations specific and accurate?
+        - Is procedure type clearly specified with all critical distinctions?
+        - Are measurements exact and complete?
+        - Are instruments and techniques precisely documented?
+        
     3. **Documentation Completeness (Score 0-10):**
-       - All required elements present for this specific procedure type?
-       - Are abnormal findings addressed with clinical significance?
-       - Missing elements that should be documented?
-       
+        - All required elements present for this specific procedure type?
+        - Are abnormal findings addressed with clinical significance?
+        - Missing elements that should be documented?
+        
     4. **Clinical Consistency (Score 0-10):**
-       - Do preoperative and postoperative diagnoses align logically?
-       - Are procedure findings consistent with documented technique?
-       - Any contradictions between different sections of the report?
-       
+        - Do preoperative and postoperative diagnoses align logically?
+        - Are procedure findings consistent with documented technique?
+        - Any contradictions between different sections of the report?
+        
     5. **Clarity (Score 0-10):**
-       - Is the procedure description unambiguous?
-       - Are findings clearly explained?
-       - Would another surgeon understand exactly what was done?
+        - Is the procedure description unambiguous?
+        - Are findings clearly explained?
+        - Would another surgeon understand exactly what was done?
 
     For each criterion with score <10, provide a specific, compliant CDI query that addresses the deficiency.
     """
@@ -617,7 +616,7 @@ if uploaded_file:
                 
                 # Perform AI-enhanced procedure analysis
                 analysis_result = generate_procedure_cdi_analysis(
-                    section_text, 
+                    section_text,  
                     proc_info.get("Procedure Type", "Unknown")
                 )
                 
@@ -644,14 +643,18 @@ if uploaded_file:
             if not df.empty:
                 # Apply styling
                 styled_df = df.style.applymap(highlight_procedure_scores, subset=['Score']) \
-                                 .applymap(highlight_priority, subset=['Priority'])
+                                     .applymap(highlight_priority, subset=['Priority'])
                 
                 st.dataframe(styled_df, use_container_width=True, height=600)
                 
                 # Display AI-enhanced insights
-                if 'Detailed_AI_Analysis' in result:
-                    with st.expander("🤖 AI-Enhanced Analysis Details"):
-                        ai_analysis = result['Detailed_AI_Analysis']
+                # The 'result' variable here is from the last iteration of the loop, which might not be what's intended.
+                # It's better to iterate through all_results to display details for each section or pick a representative one.
+                # For simplicity, I'll display the details for the first section if available.
+                first_section_result = next(iter(all_results.values()), None)
+                if first_section_result and 'Detailed_AI_Analysis' in first_section_result:
+                    with st.expander("🤖 AI-Enhanced Analysis Details (for first analyzed section)"):
+                        ai_analysis = first_section_result['Detailed_AI_Analysis']
                         
                         col1, col2 = st.columns(2)
                         with col1:
@@ -700,9 +703,9 @@ if uploaded_file:
                     st.metric("Medium Priority Issues", medium_priority_count)
                 with col3:
                     avg_scores = []
-                    for section, result in all_results.items():
-                        if 'Overall_Assessment' in result:
-                            total_score = result['Overall_Assessment'].get('Total_Score', '0/50')
+                    for section_name, section_result in all_results.items():
+                        if 'Overall_Assessment' in section_result:
+                            total_score = section_result['Overall_Assessment'].get('Total_Score', '0/50')
                             if isinstance(total_score, str) and '/' in total_score:
                                 score = int(total_score.split('/')[0])
                                 avg_scores.append(score)
@@ -711,9 +714,9 @@ if uploaded_file:
                 with col4:
                     # AI confidence scoring
                     ai_confidence_scores = []
-                    for result in all_results.values():
-                        if 'Overall_Assessment' in result:
-                            ai_conf = result['Overall_Assessment'].get('AI_Confidence', 'Medium')
+                    for section_result in all_results.values():
+                        if 'Overall_Assessment' in section_result:
+                            ai_conf = section_result['Overall_Assessment'].get('AI_Confidence', 'Medium')
                             if ai_conf == 'High':
                                 ai_confidence_scores.append(3)
                             elif ai_conf == 'Medium':
@@ -752,9 +755,9 @@ if uploaded_file:
                             })
                         
                         st.download_button(
-                            "📥 Download Excel Report", 
-                            buffer.getvalue(), 
-                            file_name="Procedure_CDI_Analysis.xlsx", 
+                            "📥 Download Excel Report",  
+                            buffer.getvalue(),  
+                            file_name="Procedure_CDI_Analysis.xlsx",  
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
 
@@ -763,19 +766,19 @@ if uploaded_file:
                     summary_report = "PROCEDURE CDI ANALYSIS SUMMARY REPORT\n"
                     summary_report += "=" * 50 + "\n\n"
                     
-                    for section, result in all_results.items():
-                        summary_report += f"SECTION: {section.title()}\n"
-                        summary_report += f"Document Type: {result.get('Doc Type', 'Unknown')}\n"
-                        summary_report += f"Procedure Type: {result.get('Procedure Type', 'Unknown')}\n"
+                    for section_name, section_result in all_results.items():
+                        summary_report += f"SECTION: {section_name.title()}\n"
+                        summary_report += f"Document Type: {section_result.get('Doc Type', 'Unknown')}\n"
+                        summary_report += f"Procedure Type: {section_result.get('Procedure Type', 'Unknown')}\n"
                         
-                        if 'Overall_Assessment' in result:
-                            oa = result['Overall_Assessment']
+                        if 'Overall_Assessment' in section_result:
+                            oa = section_result['Overall_Assessment']
                             summary_report += f"Overall Score: {oa.get('Total_Score', 'N/A')}\n"
                             summary_report += f"Quality Grade: {oa.get('Quality_Grade', 'N/A')}\n"
                             summary_report += f"Summary: {oa.get('Summary', 'N/A')}\n"
                         
-                        if 'AI_Enhanced_Findings' in result:
-                            aef = result['AI_Enhanced_Findings']
+                        if 'AI_Enhanced_Findings' in section_result:
+                            aef = section_result['AI_Enhanced_Findings']
                             summary_report += f"\n--- AI-ENHANCED FINDINGS ---\n"
                             if aef.get('Procedure_Validation_Issues'):
                                 summary_report += f"Procedure Validation Issues: {'; '.join(aef['Procedure_Validation_Issues'])}\n"
@@ -786,8 +789,8 @@ if uploaded_file:
                             if aef.get('Coding_Risk_Factors'):
                                 summary_report += f"Coding Risk Factors: {'; '.join(aef['Coding_Risk_Factors'])}\n"
                         
-                        if 'Detailed_AI_Analysis' in result:
-                            da = result['Detailed_AI_Analysis']
+                        if 'Detailed_AI_Analysis' in section_result:
+                            da = section_result['Detailed_AI_Analysis']
                             summary_report += f"\n--- DETAILED AI INSIGHTS ---\n"
                             if 'Coding_Prediction' in da:
                                 cp = da['Coding_Prediction']
@@ -797,9 +800,9 @@ if uploaded_file:
                         summary_report += "\n" + "-" * 40 + "\n\n"
                     
                     st.download_button(
-                        "📄 Download Summary Report", 
-                        summary_report, 
-                        file_name="Procedure_CDI_Summary.txt", 
+                        "📄 Download Summary Report",  
+                        summary_report,  
+                        file_name="Procedure_CDI_Summary.txt",  
                         mime="text/plain"
                     )
 
